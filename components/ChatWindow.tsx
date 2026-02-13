@@ -1,7 +1,7 @@
-
 import React, { useState, useEffect, useRef } from 'react';
 import { User, ChatRoom, Message } from '../types';
 import { getAiResponse, summarizeChat } from '../services/geminiService';
+import { supabase } from '../services/supabaseClient'; // Make sure you created this file
 
 interface ChatWindowProps {
   user: User;
@@ -27,20 +27,67 @@ const ChatWindow: React.FC<ChatWindowProps> = ({ user, room, allUsers, onUpdateR
     ? otherParticipants.map(p => p.name.split(' ')[0]).join(', ')
     : otherParticipants[0]?.name || 'Chat';
 
-  // Available people to invite (who are not already in this room)
   const inviteCandidates = allUsers.filter(u => !room.participants.includes(u.id));
 
+  // --- SUPABASE INTEGRATION ---
+
   useEffect(() => {
-    // Mock fetch messages for this room
-    const dummyMessages: Message[] = [
-      { id: 'm1', senderId: 'system', senderName: 'Acertax System', text: `Secure end-to-end communication established.`, timestamp: new Date(Date.now() - 3600000) },
-      ... (room.lastMessage ? [{ id: 'm_last', senderId: 'u2', senderName: otherParticipants[0]?.name || 'User', text: room.lastMessage, timestamp: new Date(Date.now() - 60000) }] : [])
-    ];
-    setMessages(dummyMessages);
-    setSummary('');
-    setShowSummary(false);
-    setShowInviteModal(false);
-  }, [room.id]);
+    // 1. Fetch existing messages from Supabase for this room
+    const fetchMessages = async () => {
+      const { data, error } = await supabase
+        .from('messages')
+        .select('*')
+        .eq('room_id', room.id) // Ensure your table has a room_id column
+        .order('created_at', { ascending: true });
+
+      if (error) {
+        console.error('Error fetching messages:', error);
+      } else {
+        // Map database fields to your Message type
+        const formattedMessages: Message[] = data.map(m => ({
+          id: m.id,
+          senderId: m.user_id,
+          senderName: allUsers.find(u => u.id === m.user_id)?.name || 'Unknown',
+          text: m.content,
+          timestamp: new Date(m.created_at),
+          isAi: m.is_ai || false
+        }));
+        setMessages(formattedMessages);
+      }
+    };
+
+    fetchMessages();
+
+    // 2. Subscribe to REALTIME changes for this room
+    const channel = supabase
+      .channel(`room_${room.id}`)
+      .on(
+        'postgres_changes',
+        { event: 'INSERT', schema: 'public', table: 'messages', filter: `room_id=eq.${room.id}` },
+        (payload) => {
+          const newMsg = payload.new;
+          // Only add if it's not from the current user (to avoid duplicates)
+          if (newMsg.user_id !== user.id) {
+            const formattedMsg: Message = {
+              id: newMsg.id,
+              senderId: newMsg.user_id,
+              senderName: allUsers.find(u => u.id === newMsg.user_id)?.name || 'Unknown',
+              text: newMsg.content,
+              timestamp: new Date(newMsg.created_at),
+              isAi: newMsg.is_ai || false
+            };
+            setMessages(prev => [...prev, formattedMsg]);
+          }
+        }
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, [room.id, allUsers]);
+
+  // --- END SUPABASE INTEGRATION ---
 
   useEffect(() => {
     if (scrollRef.current) {
@@ -52,25 +99,45 @@ const ChatWindow: React.FC<ChatWindowProps> = ({ user, room, allUsers, onUpdateR
     e.preventDefault();
     if (!inputText.trim()) return;
 
+    const tempId = Date.now().toString();
     const userMessage: Message = {
-      id: Date.now().toString(),
+      id: tempId,
       senderId: user.id,
       senderName: user.name,
       text: inputText,
       timestamp: new Date(),
     };
 
+    // Update UI locally for instant feedback
     setMessages(prev => [...prev, userMessage]);
     setInputText('');
+
+    // 3. Save to Supabase
+    const { error } = await supabase
+      .from('messages')
+      .insert([
+        { 
+          user_id: user.id, 
+          content: inputText, 
+          room_id: room.id,
+          is_ai: false 
+        }
+      ]);
+
+    if (error) console.error("Error sending message:", error);
+
     onUpdateRoom({ ...room, lastMessage: inputText });
 
+    // Handle AI Logic
     if (inputText.toLowerCase().includes('@ai')) {
       setIsTyping(true);
       const chatHistory = messages.slice(-5).map(m => ({
         role: m.senderId === user.id ? 'user' : 'model',
         parts: [{ text: m.text }]
       }));
+      
       const responseText = await getAiResponse(inputText, chatHistory);
+      
       const aiMessage: Message = {
         id: (Date.now() + 1).toString(),
         senderId: 'ai',
@@ -79,6 +146,17 @@ const ChatWindow: React.FC<ChatWindowProps> = ({ user, room, allUsers, onUpdateR
         timestamp: new Date(),
         isAi: true,
       };
+
+      // Also save AI response to Supabase so others see it
+      await supabase.from('messages').insert([
+        { 
+          user_id: 'ai_system_id', // Use a reserved ID for AI
+          content: aiMessage.text, 
+          room_id: room.id,
+          is_ai: true 
+        }
+      ]);
+
       setMessages(prev => [...prev, aiMessage]);
       setIsTyping(false);
     }
@@ -97,11 +175,19 @@ const ChatWindow: React.FC<ChatWindowProps> = ({ user, room, allUsers, onUpdateR
     onInviteParticipant(userId);
     setShowInviteModal(false);
     const invitedUser = allUsers.find(u => u.id === userId);
+    
+    const systemText = `${user.name} added ${invitedUser?.name} to the conversation.`;
+    
+    // Log invite to Supabase
+    supabase.from('messages').insert([
+      { user_id: 'system', content: systemText, room_id: room.id }
+    ]);
+
     setMessages(prev => [...prev, {
       id: `sys_${Date.now()}`,
       senderId: 'system',
       senderName: 'System',
-      text: `${user.name} added ${invitedUser?.name} to the conversation.`,
+      text: systemText,
       timestamp: new Date()
     }]);
   };

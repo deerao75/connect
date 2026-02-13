@@ -1,31 +1,47 @@
-
-import React, { useState, useMemo } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import Sidebar from './Sidebar';
 import ChatWindow from './ChatWindow';
 import { User, ChatRoom } from '../types';
+import { supabase } from '../services/supabaseClient';
 
 interface DashboardProps {
   user: User;
   onLogout: () => void;
 }
 
-// Mock of employees currently "logged in" to the workspace
-const COLLEAGUES: User[] = [
-  { id: 'u2', name: 'Alex Rivera', email: 'alex.rivera@acertax.com', avatar: 'https://i.pravatar.cc/150?u=u2', status: 'online' },
-  { id: 'u3', name: 'Jessica Park', email: 'jessica.park@acertax.com', avatar: 'https://i.pravatar.cc/150?u=u3', status: 'online' },
-  { id: 'u4', name: 'Marcus Chen', email: 'marcus.chen@acertax.com', avatar: 'https://i.pravatar.cc/150?u=u4', status: 'online' },
-  { id: 'u5', name: 'Sarah Miller', email: 'sarah.miller@acertax.com', avatar: 'https://i.pravatar.cc/150?u=u5', status: 'away' },
-  { id: 'u6', name: 'David Wilson', email: 'david.wilson@acertax.com', avatar: 'https://i.pravatar.cc/150?u=u6', status: 'online' },
-  { id: 'u7', name: 'Elena Rodriguez', email: 'elena.rodriguez@acertax.com', avatar: 'https://i.pravatar.cc/150?u=u7', status: 'online' },
-];
-
 const Dashboard: React.FC<DashboardProps> = ({ user, onLogout }) => {
+  const [colleagues, setColleagues] = useState<User[]>([]); // State for real employees
   const [rooms, setRooms] = useState<ChatRoom[]>([]);
   const [activeRoomId, setActiveRoomId] = useState<string | null>(null);
 
+  // --- FETCH REAL EMPLOYEES FROM SUPABASE ---
+  useEffect(() => {
+    const fetchEmployees = async () => {
+      const { data, error } = await supabase
+        .from('profiles') // Ensure your table name is 'profiles' in Supabase
+        .select('*')
+        .neq('id', user.id); // Exclude the current logged-in user
+
+      if (error) {
+        console.error('Error fetching employees:', error);
+      } else if (data) {
+        // Map Supabase data to our User type
+        const formattedUsers: User[] = data.map(profile => ({
+          id: profile.id,
+          name: profile.name || 'Anonymous',
+          email: profile.email || '',
+          avatar: profile.avatar || `https://ui-avatars.com/api/?name=${profile.name}&background=random`,
+          status: profile.status || 'online'
+        }));
+        setColleagues(formattedUsers);
+      }
+    };
+
+    fetchEmployees();
+  }, [user.id]);
+
   // Handle clicking a member in the sidebar
   const handleSelectMember = (targetUser: User) => {
-    // Check if a direct chat already exists with exactly this person
     const existingRoom = rooms.find(r => 
       r.type === 'direct' && 
       r.participants.length === 2 && 
@@ -78,7 +94,7 @@ const Dashboard: React.FC<DashboardProps> = ({ user, onLogout }) => {
     <div className="flex w-full h-full overflow-hidden bg-white shadow-2xl rounded-xl border border-slate-200 max-w-[1600px] mx-auto">
       <Sidebar 
         user={user} 
-        colleagues={COLLEAGUES} 
+        colleagues={colleagues} 
         rooms={rooms}
         activeRoomId={activeRoomId} 
         onSelectMember={handleSelectMember} 
@@ -92,7 +108,7 @@ const Dashboard: React.FC<DashboardProps> = ({ user, onLogout }) => {
           <ChatWindow 
             user={user} 
             room={activeRoom} 
-            allUsers={[user, ...COLLEAGUES]}
+            allUsers={[user, ...colleagues]}
             onUpdateRoom={(updatedRoom) => {
               setRooms(prev => prev.map(r => r.id === updatedRoom.id ? updatedRoom : r));
             }}
@@ -105,8 +121,8 @@ const Dashboard: React.FC<DashboardProps> = ({ user, onLogout }) => {
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-5.062A8.935 8.935 0 013 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
               </svg>
             </div>
-            <h3 className="text-xl font-semibold text-slate-600 mb-2">Welcome to Acertax Connect</h3>
-            <p className="max-w-xs">Select a colleague from the sidebar to start a secure conversation.</p>
+            <h3 className="text-xl font-semibold text-slate-600 mb-2 font-black tracking-tight">Welcome to Acertax Connect</h3>
+            <p className="max-w-xs text-xs font-medium uppercase tracking-widest leading-relaxed">Select a colleague to start a secure conversation.</p>
           </div>
         )}
       </div>
